@@ -51,7 +51,16 @@ jobs:
           BROWSER_MODE: "playwright"   # use headless Chromium on Linux runners
         run: python monitor.py --once
 
-      # ── 6. Upload debug artefacts on failure ───────────────────────────────
+      # ── 6. Upload log on every run ────────────────────────────────────────
+      - name: Upload run log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitor-log
+          path: monitor.log
+          if-no-files-found: ignore
+
+      # ── 7. Upload debug screenshot on failure ─────────────────────────────
       - name: Upload debug screenshot
         if: failure()
         uses: actions/upload-artifact@v4

@@ -14,10 +14,11 @@ stay open while the monitor is running.
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 from config import CHECK_INTERVAL_MINUTES, TARGET_SIZE, PRODUCT_URL
 from scraper import init_browser, close_browser, check_size_availability
@@ -42,6 +43,42 @@ logger = logging.getLogger(__name__)
 # Single check
 # ---------------------------------------------------------------------------
 
+def _write_github_summary(result, alerted: bool = False):
+    """Write a markdown summary card to GitHub Actions Job Summary."""
+    summary_file = os.getenv("GITHUB_STEP_SUMMARY")
+    if not summary_file:
+        return  # not running in GitHub Actions
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    in_stock  = [s.size for s in result.all_sizes if s.available]
+    oos       = [s.size for s in result.all_sizes if not s.available]
+
+    if result.error:
+        status_line = f"❌ **Error:** {result.error}"
+    elif result.available:
+        status_line = f"🟢 **Size {result.target_size} — IN STOCK!** Telegram alert sent."
+    else:
+        status_line = f"🔴 **Size {result.target_size} — Out of stock**"
+
+    lines = [
+        "## Ajio Size Monitor",
+        f"**Checked at:** {now}",
+        f"**Product:** [Puma Mayze Lux (White)]({PRODUCT_URL})",
+        "",
+        status_line,
+        "",
+        "### All sizes",
+        "| Size | Status |",
+        "|------|--------|",
+    ]
+    for s in result.all_sizes:
+        icon = "✅ In stock" if s.available else "❌ OOS"
+        lines.append(f"| {s.size} | {icon} |")
+
+    with open(summary_file, "a", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
 async def run_check(debug: bool = False) -> bool:
     """Return True if target size is in stock."""
     logger.info(f"Checking size {TARGET_SIZE!r} ...")
@@ -49,12 +86,14 @@ async def run_check(debug: bool = False) -> bool:
 
     if result.error:
         logger.error(f"  Error: {result.error}")
+        _write_github_summary(result)
         return False
 
     if result.found:
         logger.info(f"  {result.message}")
         if result.available:
             send_stock_alert(TARGET_SIZE)
+            _write_github_summary(result, alerted=True)
             return True
     else:
         logger.warning(f"  {result.message}")
@@ -65,6 +104,7 @@ async def run_check(debug: bool = False) -> bool:
         logger.info(f"  In stock : {in_stock or 'none'}")
         logger.info(f"  OOS      : {oos or 'none'}")
 
+    _write_github_summary(result)
     return False
 
 
