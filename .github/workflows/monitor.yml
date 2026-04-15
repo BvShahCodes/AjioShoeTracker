@@ -30,7 +30,9 @@ jobs:
 
       # ── 4. Install Playwright's Chromium ───────────────────────────────────
       - name: Install Playwright browsers
-        run: python -m playwright install chromium --with-deps
+        run: |
+          python -m playwright install chromium
+          sudo python -m playwright install-deps chromium
 
       # ── 5. Run one check ───────────────────────────────────────────────────
       - name: Check size availability
