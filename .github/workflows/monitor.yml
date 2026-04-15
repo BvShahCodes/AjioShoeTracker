@@ -1,0 +1,52 @@
+name: Ajio Size Monitor
+
+on:
+  schedule:
+    # Runs every 15 minutes  (GitHub minimum is 5 min; cron syntax in UTC)
+    - cron: "*/15 * * * *"
+  workflow_dispatch:   # also lets you trigger manually from the GitHub UI
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - uses: actions/checkout@v4
+
+      # ── 2. Python ──────────────────────────────────────────────────────────
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # ── 3. Install Python deps ─────────────────────────────────────────────
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ── 4. Install Playwright's Chromium ───────────────────────────────────
+      - name: Install Playwright browsers
+        run: python -m playwright install chromium --with-deps
+
+      # ── 5. Run one check ───────────────────────────────────────────────────
+      - name: Check size availability
+        env:
+          # Pull secrets from GitHub → Settings → Secrets → Actions
+          TELEGRAM_ENABLED: "true"
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TARGET_SIZE: ${{ vars.TARGET_SIZE || '4' }}
+          BROWSER_MODE: "playwright"   # use headless Chromium on Linux runners
+        run: python monitor.py --once
+
+      # ── 6. Upload debug artefacts on failure ───────────────────────────────
+      - name: Upload debug screenshot
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshot
+          path: |
+            debug.png
+            debug_page.html
+          if-no-files-found: ignore

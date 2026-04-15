@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip --version)",
+      "WebFetch(domain:www.ajio.com)",
+      "Bash(pip install:*)",
+      "Bash(python -c \"import playwright; print\\('playwright OK'\\)\")",
+      "Bash(python -m playwright install chromium)",
+      "Bash(python -m playwright install chromium --with-deps)",
+      "Bash(python -c ':*)",
+      "Bash(python scraper.py)",
+      "Bash(python -c \"import playwright_stealth; print\\(dir\\(playwright_stealth\\)\\)\")",
+      "Bash(python -c \"from playwright_stealth import Stealth; help\\(Stealth\\)\")",
+      "Bash(python -c \"from playwright_stealth import Stealth; import inspect; print\\(inspect.getsource\\(Stealth.__call__ if hasattr\\(Stealth, '__call__'\\) else Stealth\\)\\)\")",
+      "Bash(python -c \"from playwright_stealth import context_managers; print\\(dir\\(context_managers\\)\\)\")"
+    ]
+  }
+}

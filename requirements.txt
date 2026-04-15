@@ -1,0 +1,4 @@
+playwright==1.44.0
+playwright-stealth==2.0.3
+plyer==2.1.0
+python-dotenv==1.0.1
