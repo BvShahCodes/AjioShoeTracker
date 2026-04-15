@@ -14,8 +14,10 @@ Two browser modes controlled by BROWSER_MODE in config:
 """
 
 import asyncio
+import json
 import logging
 import random
+import re
 import subprocess
 import sys
 import tempfile
@@ -87,26 +89,15 @@ class ScrapeResult:
 
 
 # ---------------------------------------------------------------------------
-# Ajio size selectors  (confirmed from live HTML)
+# Ajio embeds ALL product + stock data in window.__PRELOADED_STATE__ in the
+# page HTML. We extract it as JSON — faster and more reliable than DOM parsing.
 #
-#  In-stock:  <div class="circle size-variant-item size-instock">
-#               <span aria-label="Select Size">6</span>
-#             </div>
-#
-#  OOS:       <div class="circle swatch-size-oos size-variant-item sprite-img"
-#                  aria-disabled="true">4</div>
+# Path to size stock:
+#   __PRELOADED_STATE__
+#     .product.productDetails.variantOptions[]
+#       .stock.stockLevelStatus  →  "inStock" | "outOfStock"
+#       .variantOptionQualifiers[qualifier=="size"].value  →  "3", "4", …
 # ---------------------------------------------------------------------------
-SIZE_SELECTORS = [
-    "div.size-variant-item",
-    ".size-variant-item",
-    "div.circle[role='radio']",
-    "div[class*='size-variant']",
-]
-
-OOS_MARKERS = [
-    "swatch-size-oos", "disable", "strike",
-    "unavailable", "outofstock", "out-of-stock", "sold-out",
-]
 
 
 # ---------------------------------------------------------------------------
@@ -262,25 +253,46 @@ async def _human_scroll(page: Page):
         pass
 
 
-async def _find_size_elements(page: Page):
-    for selector in SIZE_SELECTORS:
-        try:
-            await page.wait_for_selector(selector, timeout=5000)
-            elements = await page.query_selector_all(selector)
-            if elements and len(elements) >= 2:
-                logger.debug(f"Sizes found via: {selector!r}")
-                return elements, selector
-        except Exception:
+def _parse_sizes_from_preloaded_state(html: str) -> list[SizeInfo]:
+    """
+    Extract size + stock data from window.__PRELOADED_STATE__ embedded in HTML.
+    Returns [] if the data can't be found (page blocked or structure changed).
+    """
+    match = re.search(
+        r'window\.__PRELOADED_STATE__\s*=\s*(\{.*?\});?\s*</script>',
+        html, re.DOTALL
+    )
+    if not match:
+        return []
+
+    try:
+        state = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return []
+
+    try:
+        variant_options = (
+            state["product"]["productDetails"]["variantOptions"]
+        )
+    except (KeyError, TypeError):
+        return []
+
+    sizes: list[SizeInfo] = []
+    for variant in variant_options:
+        # Find the size label from qualifiers
+        qualifiers = variant.get("variantOptionQualifiers", [])
+        size_label = next(
+            (q["value"] for q in qualifiers if q.get("qualifier") == "size"),
+            None,
+        )
+        if size_label is None:
             continue
-    return [], None
 
+        stock_status = variant.get("stock", {}).get("stockLevelStatus", "outOfStock")
+        available = stock_status == "inStock"
+        sizes.append(SizeInfo(size=size_label, available=available))
 
-async def _is_oos(element) -> bool:
-    classes = (await element.get_attribute("class") or "").lower()
-    aria_disabled = (await element.get_attribute("aria-disabled") or "").lower()
-    if aria_disabled == "true":
-        return True
-    return any(m in classes for m in OOS_MARKERS)
+    return sizes
 
 
 # ---------------------------------------------------------------------------
@@ -301,55 +313,51 @@ async def check_size_availability(
     try:
         logger.info("Navigating to product page...")
         await page.goto(url, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT_MS)
-        await _human_pause(page, 3)
-        await _human_scroll(page)
-        await _human_pause(page, 1)
+        # Small pause so the server-rendered HTML is fully received
+        await _human_pause(page, 2)
 
         if debug_screenshot:
             await page.screenshot(path="debug.png", full_page=False)
             logger.info("Screenshot saved -> debug.png")
 
-        body_text = (await page.inner_text("body")).lower()
-        if "access denied" in body_text:
+        html = await page.content()
+
+        if "access denied" in html.lower()[:2000]:
             if debug_screenshot:
-                Path("debug_page.html").write_text(await page.content(), encoding="utf-8")
+                Path("debug_page.html").write_text(html, encoding="utf-8")
             result.error = (
-                "Ajio returned 'Access Denied'. IP may be flagged by Akamai. "
-                "Disable VPN/proxy and retry, or use the Windows Task Scheduler "
-                "option (runs from your home IP which works)."
+                "Ajio returned 'Access Denied' (Akamai blocked this IP). "
+                "Cloud IPs are always blocked — use the Windows Task Scheduler "
+                "option which runs from your home IP."
             )
             logger.error(result.error)
             return result
 
-        size_elements, matched_selector = await _find_size_elements(page)
+        # Parse size + stock from embedded JSON (fast, no DOM waiting needed)
+        sizes = _parse_sizes_from_preloaded_state(html)
 
-        if not size_elements:
+        if not sizes:
             if debug_screenshot:
-                Path("debug_page.html").write_text(await page.content(), encoding="utf-8")
+                Path("debug_page.html").write_text(html, encoding="utf-8")
             result.error = (
-                "Size elements not found — page loaded but size list isn't visible. "
+                "Could not find size data in page. "
                 "Check debug.png / debug_page.html."
             )
             logger.warning(result.error)
             return result
 
-        logger.info(f"Found {len(size_elements)} size elements")
+        logger.info(f"Found {len(sizes)} sizes in page data")
+        result.all_sizes = sizes
 
-        for elem in size_elements:
-            text = (await elem.inner_text()).strip()
-            if not text:
-                continue
-            oos = await _is_oos(elem)
-            result.all_sizes.append(SizeInfo(size=text, available=not oos))
-            logger.debug(f"  {text!r}: {'in stock' if not oos else 'OOS'}")
-
-            if text == target_size or text.strip().upper() == f"UK {target_size}":
+        for s in sizes:
+            logger.debug(f"  {s.size!r}: {'in stock' if s.available else 'OOS'}")
+            if s.size == target_size or s.size.upper() == f"UK {target_size}":
                 result.found = True
-                result.available = not oos
-                result.message = f"Size {target_size} is {'IN STOCK' if not oos else 'OUT OF STOCK'}"
+                result.available = s.available
+                result.message = f"Size {target_size} is {'IN STOCK' if s.available else 'OUT OF STOCK'}"
 
         if not result.found:
-            labels = [s.size for s in result.all_sizes]
+            labels = [s.size for s in sizes]
             result.message = f"Size {target_size!r} not in size list. Labels: {labels}"
             logger.warning(result.message)
 
